@@ -1,0 +1,542 @@
+// ==UserScript==
+// @name         크랙 단독형 키워드 노트 (Keyword Note)
+// @namespace    https://crack.wrtn.ai/
+// @version      1.0.0
+// @description  상시 발동 및 키워드 감지 시 완전 교체되는 직관적인 키워드 노트 스크립트
+// @author       Assistant
+// @match        https://crack.wrtn.ai/*
+// @grant        GM_addStyle
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const ACCENT_COLOR = '#FBA707';
+    let isModalOpen = false;
+    let _capturedToken = '';
+
+    // ==========================================
+    // 데이터 및 상태 관리 시스템
+    // ==========================================
+    function getChatId() {
+        const m = location.pathname.match(/\/(?:chats|episodes)\/[a-f0-9]+\/([a-f0-9]+)/);
+        if (m) return m[1];
+        const m2 = location.pathname.match(/\/(?:chats|episodes)\/([a-f0-9]+)/);
+        if (m2) return m2[1];
+        return null;
+    }
+
+    function getToken() {
+        return _capturedToken;
+    }
+
+    // fetch 가로채기 (API 토큰 획득용)
+    const _origFetch = window.fetch;
+    window.fetch = async function(...a) {
+        try {
+            const u = typeof a[0] === 'string' ? a[0] : a[0]?.url || '';
+            if (u.includes('crack-api.wrtn.ai') || u.includes('contents-api.wrtn.ai')) {
+                const h = a[1]?.headers || {};
+                let t = '';
+                if (h instanceof Headers) t = h.get('Authorization') || h.get('authorization') || '';
+                else t = h['Authorization'] || h['authorization'] || '';
+                if (t) _capturedToken = t.replace('Bearer ', '');
+            }
+        } catch(e) {}
+        return _origFetch.apply(this, a);
+    };
+
+    // 로컬 스토리지 데이터 관리
+    function getNoteData(chatId) {
+        try {
+            const data = localStorage.getItem(`Crack_KW_Note_${chatId}`);
+            if (data) return JSON.parse(data);
+        } catch (e) {}
+        return { alwaysNote: "", keywords: [] };
+    }
+
+    function saveNoteData(chatId, data) {
+        localStorage.setItem(`Crack_KW_Note_${chatId}`, JSON.stringify(data));
+    }
+
+    function getTurnCount(chatId) {
+        return parseInt(localStorage.getItem(`Crack_KW_Turn_${chatId}`) || '0');
+    }
+
+    function incTurnCount(chatId) {
+        const t = getTurnCount(chatId) + 1;
+        localStorage.setItem(`Crack_KW_Turn_${chatId}`, String(t));
+        return t;
+    }
+
+    function getHolds(chatId) {
+        try {
+            return JSON.parse(localStorage.getItem(`Crack_KW_Holds_${chatId}`) || '{}');
+        } catch (e) { return {}; }
+    }
+
+    function saveHolds(chatId, holds) {
+        localStorage.setItem(`Crack_KW_Holds_${chatId}`, JSON.stringify(holds));
+    }
+
+    // ==========================================
+    // UI 및 모달 스타일 
+    // ==========================================
+    function injectStyles() {
+        if (document.getElementById('crack-kw-css')) return;
+        const s = document.createElement('style');
+        s.id = 'crack-kw-css';
+        s.textContent = `
+            .crack-ext-header-kw-btn { display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; height: 36px; border-radius: 6px; background: linear-gradient(135deg, #fba707, #ff6b6b) !important; color: white !important; font-weight: 600; font-size: 13px; border: none !important; cursor: pointer; transition: transform 0.1s; white-space: nowrap !important; margin-left: 6px; margin-right: -6px; }
+            .crack-kw-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 100000; display: flex; align-items: center; justify-content: center; pointer-events: auto !important; }
+            .crack-kw-modal { background: #fff !important; border-radius: 16px; padding: 28px; width: 600px; max-width: 90vw; height: calc(66vh - 20px); max-height: calc(66vh - 20px); display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,0.2); pointer-events: auto !important; color: #222 !important; box-sizing: border-box; }
+            .ckw-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+            .ckw-header h3 { margin: 0; font-size: 17px; font-weight: 700; color: #222 !important; display: flex; align-items: center; gap: 6px; }
+            .ckw-icon-btn { background: none; border: none; font-size: 14px; cursor: pointer; padding: 4px 8px; border-radius: 6px; color: #666; transition: 0.2s; font-weight: bold; }
+            .ckw-icon-btn:hover { background: #eee; color: #222; }
+            .ckw-tabs { display: flex; gap: 12px; border-bottom: 1px solid #eee; padding-bottom: 0px; margin-bottom: 16px; }
+            .ckw-tab { background: none; border: none; font-size: 14px; font-weight: 600; color: #888; padding: 0 4px 12px 4px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+            .ckw-tab.active { color: ${ACCENT_COLOR}; border-bottom-color: ${ACCENT_COLOR}; }
+            .ckw-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+            
+            /* Inputs & Textareas */
+            .ckw-textarea { width: 100%; flex: 1; min-height: 200px; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; background: #fafafa; color: #222; resize: none; font-family: inherit; }
+            .ckw-textarea:focus { outline: 1px solid ${ACCENT_COLOR}; background: #fff; }
+            .ckw-input { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 13px; box-sizing: border-box; background: #fafafa; color: #222; margin-bottom: 12px; }
+            .ckw-input:focus { outline: 1px solid ${ACCENT_COLOR}; background: #fff; }
+            .ckw-label { display: block; font-size: 12px; font-weight: 600; color: #555; margin-bottom: 4px; }
+            
+            .ckw-char-count { text-align: right; font-size: 12px; color: #888; margin-top: 6px; font-weight: 600; }
+            .ckw-char-count.over { color: #e74c3c; }
+
+            /* Lists & Items */
+            .ckw-list-item { background: #f9f9f9; border: 1px solid #eee; border-radius: 8px; padding: 12px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px; transition: 0.2s; }
+            .ckw-list-item:hover { border-color: ${ACCENT_COLOR}; }
+            .ckw-list-top { display: flex; justify-content: space-between; align-items: center; }
+            .ckw-list-title { font-weight: 700; font-size: 14px; color: #333; }
+            .ckw-list-meta { font-size: 11px; color: #777; display: flex; gap: 8px; }
+            .ckw-list-btns button { background: none; border: none; cursor: pointer; font-size: 12px; color: #666; padding: 4px; border-radius: 4px; }
+            .ckw-list-btns button:hover { background: #eee; color: #222; }
+            .ckw-list-btns .ckw-del-btn:hover { background: #ffebeb; color: #e74c3c; }
+            
+            .ckw-btn-primary { background: ${ACCENT_COLOR}; color: #fff; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
+            .ckw-btn-primary:hover { filter: brightness(0.9); }
+            .ckw-btn-secondary { background: #eee; color: #333; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
+            .ckw-btn-secondary:hover { background: #ddd; }
+            
+            .ckw-row { display: flex; gap: 12px; }
+            .ckw-col { flex: 1; }
+
+            /* Dark Mode */
+            body[data-theme="dark"] .crack-kw-modal { background: #242321 !important; color: #F0EFEB !important; }
+            body[data-theme="dark"] .ckw-header h3 { color: #F0EFEB !important; }
+            body[data-theme="dark"] .ckw-icon-btn { color: #aaa; }
+            body[data-theme="dark"] .ckw-icon-btn:hover { background: #333; color: #fff; }
+            body[data-theme="dark"] .ckw-tabs { border-bottom-color: #444; }
+            body[data-theme="dark"] .ckw-textarea, body[data-theme="dark"] .ckw-input { background: #141413; border-color: #42413D; color: #F0EFEB; }
+            body[data-theme="dark"] .ckw-textarea:focus, body[data-theme="dark"] .ckw-input:focus { background: #1a1918; }
+            body[data-theme="dark"] .ckw-label { color: #aaa; }
+            body[data-theme="dark"] .ckw-list-item { background: #1a1918; border-color: #42413D; }
+            body[data-theme="dark"] .ckw-list-title { color: #F0EFEB; }
+            body[data-theme="dark"] .ckw-list-btns button:hover { background: #333; color: #fff; }
+            body[data-theme="dark"] .ckw-list-btns .ckw-del-btn:hover { background: #4a1919; color: #ff6b6b; }
+            body[data-theme="dark"] .ckw-btn-secondary { background: #333; color: #eee; }
+            body[data-theme="dark"] .ckw-btn-secondary:hover { background: #444; }
+        `;
+        document.head.appendChild(s);
+    }
+
+    // ==========================================
+    // UI 로직 (모달 렌더링)
+    // ==========================================
+    function injectHeaderButton() {
+        const headerContainer = document.querySelector('.absolute.z-\\[5\\] .flex.gap-3.items-center');
+        if (!headerContainer || headerContainer.querySelector('.crack-ext-header-kw-btn')) return;
+        
+        const btn = document.createElement('button');
+        btn.className = 'crack-ext-header-kw-btn';
+        btn.innerHTML = `🌼 키워드노트`;
+        
+        btn.onclick = (e) => { 
+            e.preventDefault(); e.stopPropagation(); 
+            openModal(); 
+        };
+        
+        // 기존 북마크 버튼이나 AI 요약 버튼 앞에 추가
+        headerContainer.prepend(btn);
+    }
+
+    function openModal() {
+        if (document.getElementById('ckw-overlay')) return;
+        const chatId = getChatId();
+        if (!chatId) return alert("대화방 정보를 읽을 수 없습니다.");
+
+        isModalOpen = true;
+        let currentTab = 'always'; // always or keyword
+        let editModeId = null; // null 이면 목록 보기, id가 있으면 수정 모드, 'new'면 추가 모드
+
+        const overlay = document.createElement('div');
+        overlay.id = 'ckw-overlay';
+        overlay.className = 'crack-kw-overlay';
+        
+        overlay.innerHTML = `
+            <div class="crack-kw-modal">
+                <div class="ckw-header">
+                    <h3>🌼 키워드 노트</h3>
+                    <button class="ckw-icon-btn" id="ckw-close">✕</button>
+                </div>
+                <div class="ckw-tabs" id="ckw-tabs-container">
+                    <button class="ckw-tab active" data-tab="always">상시 노트</button>
+                    <button class="ckw-tab" data-tab="keyword">키워드 노트</button>
+                </div>
+                <div class="ckw-content" id="ckw-content-area"></div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const contentArea = document.getElementById('ckw-content-area');
+        const tabsContainer = document.getElementById('ckw-tabs-container');
+
+        document.getElementById('ckw-close').onclick = closeModal;
+        overlay.onclick = (e) => { if(e.target === overlay) closeModal(); };
+
+        const tabs = overlay.querySelectorAll('.ckw-tab');
+        tabs.forEach(tab => {
+            tab.onclick = () => {
+                tabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                currentTab = tab.dataset.tab;
+                editModeId = null; // 탭 변경시 항상 메인 뷰로 초기화
+                tabsContainer.style.display = 'flex';
+                renderContent();
+            };
+        });
+
+        // 문자열 길이 계산 (띄어쓰기 포함)
+        const charLen = (str) => Array.from(str || '').length;
+
+        function renderContent() {
+            const data = getNoteData(chatId);
+
+            if (currentTab === 'always') {
+                contentArea.innerHTML = `
+                    <div style="flex:1; display:flex; flex-direction:column;">
+                        <span class="ckw-label">평소에 상시로 유지될 노트를 입력하세요. (키워드 발동 시 교체됨)</span>
+                        <textarea id="ckw-ta-always" class="ckw-textarea" placeholder="상시 노트 내용...">${data.alwaysNote || ''}</textarea>
+                        <div id="ckw-count-always" class="ckw-char-count">0 / 500자</div>
+                    </div>
+                `;
+                const ta = document.getElementById('ckw-ta-always');
+                const cnt = document.getElementById('ckw-count-always');
+                
+                const updateCount = () => {
+                    const len = charLen(ta.value);
+                    cnt.textContent = `${len} / 500자`;
+                    if (len > 500) cnt.classList.add('over'); else cnt.classList.remove('over');
+                };
+                
+                ta.addEventListener('input', () => {
+                    updateCount();
+                    data.alwaysNote = ta.value;
+                    saveNoteData(chatId, data);
+                });
+                updateCount();
+            } 
+            else if (currentTab === 'keyword') {
+                if (editModeId) {
+                    tabsContainer.style.display = 'none'; // 에디터 진입 시 탭 숨김
+                    renderEditor(data);
+                } else {
+                    tabsContainer.style.display = 'flex';
+                    renderKeywordList(data);
+                }
+            }
+        }
+
+        function renderKeywordList(data) {
+            let html = `<div style="margin-bottom: 12px; text-align: right;"><button id="ckw-btn-add" class="ckw-btn-primary">+ 새 키워드 추가</button></div>`;
+            
+            if (!data.keywords || data.keywords.length === 0) {
+                html += `<div style="text-align:center; color:#999; margin-top:40px; font-size:13px;">등록된 키워드 노트가 없습니다.</div>`;
+            } else {
+                html += `<div>`;
+                data.keywords.forEach(kw => {
+                    const holdsInfo = getHolds(chatId);
+                    const currentTurn = getTurnCount(chatId);
+                    const expireTurn = holdsInfo[kw.id];
+                    let holdStatus = '';
+                    if (expireTurn && expireTurn > currentTurn) {
+                        holdStatus = `<span style="color:${ACCENT_COLOR}; font-weight:bold;">(발동 중: ${expireTurn - currentTurn}턴 남음)</span>`;
+                    }
+
+                    html += `
+                        <div class="ckw-list-item">
+                            <div class="ckw-list-top">
+                                <span class="ckw-list-title">${kw.name} ${holdStatus}</span>
+                                <div class="ckw-list-btns">
+                                    <button class="ckw-edit-btn" data-id="${kw.id}">수정</button>
+                                    <button class="ckw-del-btn" data-id="${kw.id}">삭제</button>
+                                </div>
+                            </div>
+                            <div class="ckw-list-meta">
+                                <span>키워드: ${kw.triggers.join(', ')}</span>
+                                <span>| 유지: ${kw.holdTurns}턴</span>
+                                <span>| 길이: ${charLen(kw.content)}자</span>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += `</div>`;
+            }
+            contentArea.innerHTML = html;
+
+            const btnAdd = document.getElementById('ckw-btn-add');
+            if (btnAdd) btnAdd.onclick = () => { editModeId = 'new'; renderContent(); };
+
+            document.querySelectorAll('.ckw-edit-btn').forEach(btn => {
+                btn.onclick = () => { editModeId = btn.dataset.id; renderContent(); };
+            });
+
+            document.querySelectorAll('.ckw-del-btn').forEach(btn => {
+                btn.onclick = () => {
+                    if (!confirm("이 키워드 노트를 삭제하시겠습니까?")) return;
+                    data.keywords = data.keywords.filter(k => k.id !== btn.dataset.id);
+                    saveNoteData(chatId, data);
+                    renderContent();
+                };
+            });
+        }
+
+        function renderEditor(data) {
+            let kw = { id: 'kw_' + Date.now(), name: '', triggers: [], holdTurns: 1, content: '' };
+            if (editModeId !== 'new') {
+                const found = data.keywords.find(k => k.id === editModeId);
+                if (found) kw = { ...found }; // 복사본 생성
+            }
+
+            contentArea.innerHTML = `
+                <div style="flex:1; display:flex; flex-direction:column; overflow-y:auto; padding-right:4px;">
+                    <span class="ckw-label">노트 이름</span>
+                    <input type="text" id="ckw-ed-name" class="ckw-input" placeholder="예: 세계수 설정" value="${kw.name}">
+                    
+                    <span class="ckw-label">발동 키워드 (쉼표로 구분 OR, &&로 묶으면 AND)</span>
+                    <input type="text" id="ckw-ed-trig" class="ckw-input" placeholder="예: 엘프, 나무 && 마법" value="${kw.triggers.join(', ')}">
+                    
+                    <span class="ckw-label">유지 턴 수 (발동 후 몇 번의 턴 동안 교체 유지할지)</span>
+                    <input type="number" id="ckw-ed-turn" class="ckw-input" min="0" value="${kw.holdTurns}">
+                    
+                    <span class="ckw-label">노트 내용 (발동 시 상시노트를 대체할 내용)</span>
+                    <textarea id="ckw-ed-content" class="ckw-textarea" placeholder="발동 시 주입될 내용...">${kw.content}</textarea>
+                    <div id="ckw-ed-count" class="ckw-char-count">0 / 500자</div>
+                    
+                    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
+                        <button id="ckw-btn-cancel" class="ckw-btn-secondary">취소</button>
+                        <button id="ckw-btn-save" class="ckw-btn-primary">저장</button>
+                    </div>
+                </div>
+            `;
+
+            const ta = document.getElementById('ckw-ed-content');
+            const cnt = document.getElementById('ckw-ed-count');
+            const updateCount = () => {
+                const len = charLen(ta.value);
+                cnt.textContent = `${len} / 500자`;
+                if (len > 500) cnt.classList.add('over'); else cnt.classList.remove('over');
+            };
+            ta.addEventListener('input', updateCount);
+            updateCount();
+
+            document.getElementById('ckw-btn-cancel').onclick = () => {
+                editModeId = null;
+                renderContent();
+            };
+
+            document.getElementById('ckw-btn-save').onclick = () => {
+                const nameVal = document.getElementById('ckw-ed-name').value.trim();
+                const trigVal = document.getElementById('ckw-ed-trig').value.trim();
+                const turnVal = parseInt(document.getElementById('ckw-ed-turn').value) || 0;
+                const contVal = document.getElementById('ckw-ed-content').value.trim();
+
+                if (!nameVal) return alert("노트 이름을 입력해주세요.");
+                if (!contVal) return alert("노트 내용을 입력해주세요.");
+
+                kw.name = nameVal;
+                kw.holdTurns = turnVal;
+                kw.content = contVal;
+                // 트리거 파싱 (빈칸 제외)
+                kw.triggers = trigVal.split(',').map(s => s.trim()).filter(Boolean);
+
+                if (editModeId === 'new') {
+                    data.keywords.push(kw);
+                } else {
+                    const idx = data.keywords.findIndex(k => k.id === editModeId);
+                    if (idx !== -1) data.keywords[idx] = kw;
+                }
+
+                saveNoteData(chatId, data);
+                editModeId = null;
+                renderContent();
+            };
+        }
+
+        renderContent();
+    }
+
+    function closeModal() {
+        isModalOpen = false;
+        const o = document.getElementById('ckw-overlay');
+        if (o) o.remove();
+    }
+
+    // ==========================================
+    // 핵심 로직: 텍스트 파싱 및 유저노트 교체
+    // ==========================================
+    
+    // 유니코드 정규화 및 소문자 변환
+    function norm(s) { return (s || '').normalize('NFC').toLowerCase(); }
+    
+    // 트리거 감지 로직
+    function matchTriggers(text, triggers) {
+        if (!triggers || !triggers.length) return false;
+        const lowText = norm(text);
+        for (const t of triggers) {
+            // && 로 묶인 조건은 모두 포함되어야 함 (AND)
+            const parts = t.split('&&').map(p => norm(p.trim())).filter(Boolean);
+            if (parts.length && parts.every(p => lowText.includes(p))) return true;
+        }
+        return false;
+    }
+
+    // 서버로 유저노트 패치
+    async function patchUserNoteAPI(chatId, content) {
+        const token = getToken();
+        if (!token || !chatId) return false;
+        try {
+            // 글자수가 500자가 넘어가면 isExtend를 true로 세팅
+            const isExtend = Array.from(content).length > 500; 
+            const url = `https://crack-api.wrtn.ai/crack-gen/v3/chats/${chatId}`;
+            const res = await _origFetch(url, {
+                method: 'PATCH',
+                credentials: 'include',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userNote: { content: content, isExtend: isExtend } })
+            });
+            return res.ok;
+        } catch(e) {
+            console.error("UserNote Patch Error:", e);
+            return false;
+        }
+    }
+
+    // 메시지 전송 시 끼어들어서 처리하는 메인 함수
+    async function processNoteSwap(chatId, userMessage) {
+        const data = getNoteData(chatId);
+        let holds = getHolds(chatId);
+        
+        // 1. 턴 증가 및 만료된 홀드 정리
+        const currentTurn = incTurnCount(chatId);
+        let holdsChanged = false;
+        for (const kwId in holds) {
+            if (holds[kwId] < currentTurn) {
+                delete holds[kwId];
+                holdsChanged = true;
+            }
+        }
+
+        // 2. 사용자의 현재 메시지를 분석하여 새로운 트리거 발동 체크
+        if (data.keywords && data.keywords.length > 0) {
+            for (const kw of data.keywords) {
+                if (matchTriggers(userMessage, kw.triggers)) {
+                    // 트리거 발동: 현재 턴 + 유지 턴 수만큼 홀드
+                    holds[kw.id] = currentTurn + kw.holdTurns;
+                    holdsChanged = true;
+                }
+            }
+        }
+        
+        if (holdsChanged) saveHolds(chatId, holds);
+
+        // 3. 현재 발동 중인 키워드 노트를 수집 (교체 로직)
+        let finalNoteText = "";
+        const activeKeywords = data.keywords.filter(kw => holds[kw.id] && holds[kw.id] >= currentTurn);
+
+        if (activeKeywords.length > 0) {
+            // 발동된 키워드 노트가 있다면, 상시 노트를 '무시'하고 키워드 노트 내용들만 합침
+            finalNoteText = activeKeywords.map(kw => kw.content).join('\n\n');
+        } else {
+            // 발동된 키워드가 없으면 평소처럼 상시 노트를 사용
+            finalNoteText = data.alwaysNote || "";
+        }
+
+        // 4. 서버에 패치 전송
+        await patchUserNoteAPI(chatId, finalNoteText);
+
+        // UI에 표시되는 텍스트에어리어 동기화 시도 (선택 사항)
+        try {
+            const tas = document.querySelectorAll('textarea');
+            for (const ta of tas) {
+                if (ta.placeholder && ta.placeholder.includes("유저노트")) {
+                    ta.value = finalNoteText;
+                    // React 상태 업데이트 트리거
+                    for (const key of Object.keys(ta)) {
+                        if (key.startsWith('__reactProps')) {
+                            ta[key].onChange({ target: { value: finalNoteText } });
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch(e) {}
+    }
+
+    // ==========================================
+    // WebSocket 인터셉트 (전송 감지)
+    // ==========================================
+    const _origSend = window.WebSocket.prototype.send;
+    window.WebSocket.prototype.send = function(wsData) {
+        const ws = this;
+        if (typeof wsData === 'string' && wsData.length > 10) {
+            // 토큰 캡처 (혹시 fetch에서 놓친 경우)
+            if (!_capturedToken && wsData.startsWith('40')) {
+                const ji = wsData.indexOf('{');
+                if (ji > 0) {
+                    try {
+                        const obj = JSON.parse(wsData.slice(ji));
+                        if (obj && typeof obj.token === 'string') _capturedToken = obj.token.replace('Bearer ', '');
+                    } catch(e) {}
+                }
+            }
+
+            // 메시지 전송 감지
+            const bi = wsData.indexOf('[');
+            if (bi > 0) {
+                try {
+                    const arr = JSON.parse(wsData.slice(bi));
+                    if (Array.isArray(arr) && arr[0] === 'send' && arr[1] && typeof arr[1].message === 'string') {
+                        const msg = arr[1].message;
+                        const chatId = getChatId();
+                        if (chatId) {
+                            // 비동기로 유저노트 교체를 처리한 후, 원본 메시지 전송
+                            (async () => { 
+                                try { await processNoteSwap(chatId, msg); } catch(e) { console.error(e); } 
+                                _origSend.call(ws, wsData); 
+                            })();
+                            return; // 여기서 return 해서 동기적 전송을 막음
+                        }
+                    }
+                } catch(e) {}
+            }
+        }
+        return _origSend.call(this, wsData);
+    };
+
+    // ==========================================
+    // 초기화 및 실행
+    // ==========================================
+    injectStyles();
+    
+    // 버튼 주입을 위한 주기적 체크
+    setInterval(injectHeaderButton, 1000);
+
+})();
