@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         크랙 단독형 키워드 노트 (Keyword Note) v2
+// @name         크랙 단독형 키워드 노트 (Keyword Note) v2.1
 // @namespace    https://crack.wrtn.ai/
-// @version      2.0.0
-// @description  우선순위 적용, 다중 삭제, 자동 교체 로직이 완벽히 들어간 키워드 노트
+// @version      2.1.0
+// @description  특수기호 저장 버그 수정 및 북마크 UI 스타일 완전 통일
 // @author       Assistant
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -79,6 +79,12 @@
         localStorage.setItem(`Crack_KW_Holds_${chatId}`, JSON.stringify(holds));
     }
 
+    // HTML 따옴표 및 특수문자 깨짐 방지용
+    function escapeHtml(str) {
+        if (!str) return "";
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
     // ==========================================
     // 유저노트 UI 반영 로직 (핵심)
     // ==========================================
@@ -86,7 +92,6 @@
         const tas = document.querySelectorAll('textarea');
         for (const ta of tas) {
             if (!ta.offsetParent) continue;
-            // wrtn의 우측 패널 유저노트는 보통 maxLength가 500 또는 2000으로 세팅됨.
             if (ta.maxLength === 500 || ta.maxLength === 2000) return ta;
         }
         return null;
@@ -98,7 +103,6 @@
         if (ta.value === text) return;
         
         ta.value = text;
-        // React 렌더링 강제 업데이트
         for (const key of Object.keys(ta)) {
             if (key.startsWith('__reactProps')) {
                 try { ta[key].onChange({ target: { value: text } }); } catch(e){}
@@ -128,12 +132,11 @@
             .ckw-tab { background: none; border: none; font-size: 14px; font-weight: 600; color: #888; padding: 0 4px 12px 4px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
             .ckw-tab.active { color: ${ACCENT_COLOR}; border-bottom-color: ${ACCENT_COLOR}; }
             
-            #ckw-toggle-del { display: none; font-size: 16px; background: none; border: 1px solid #ddd; border-radius: 6px; padding: 4px 12px; margin-bottom: 8px; cursor: pointer; }
+            #ckw-toggle-del { display: none; align-items: center; justify-content: center; font-size: 18px; background: none; border: 1px solid #ddd; border-radius: 8px; padding: 0 12px; margin-bottom: 8px; cursor: pointer; height: 36px; line-height: 1; }
             #ckw-toggle-del.active { background: ${DELETE_COLOR}; color: white; border-color: ${DELETE_COLOR}; }
 
-            .ckw-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+            .ckw-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding-right: 4px; }
             
-            /* Inputs & Textareas */
             .ckw-textarea { width: 100%; flex: 1; min-height: 200px; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; background: #fafafa; color: #222; resize: none; font-family: inherit; }
             .ckw-textarea:focus { outline: 1px solid ${ACCENT_COLOR}; background: #fff; }
             .ckw-input { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 13px; box-sizing: border-box; background: #fafafa; color: #222; margin-bottom: 12px; }
@@ -143,26 +146,23 @@
             .ckw-char-count { text-align: right; font-size: 12px; color: #888; margin-top: 6px; font-weight: 600; }
             .ckw-char-count.over { color: #e74c3c; }
 
-            /* Lists & Items */
             .ckw-list-item { background: #f9f9f9; border: 1px solid #eee; border-radius: 8px; padding: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; transition: 0.2s; cursor: pointer; }
             .ckw-list-item:hover { border-color: ${ACCENT_COLOR}; }
             .ckw-list-item.selected-delete { border-color: ${DELETE_COLOR}; background: rgba(255,68,51,0.05); }
             
             .ckw-item-left { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; color: #333; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
-            .ckw-item-right { display: flex; gap: 4px; }
+            .ckw-item-right { display: flex; gap: 4px; flex-shrink: 0; }
             .ckw-order-btn { background: #eee; border: none; cursor: pointer; font-size: 10px; color: #666; padding: 6px; border-radius: 4px; }
             .ckw-order-btn:hover { background: #ddd; color: #222; }
 
-            /* Delete Action Bar */
-            #ckw-delete-actions { display: none; justify-content: space-between; align-items: center; margin-bottom: 12px; background: rgba(255,68,51,0.08); padding: 0 12px; border-radius: 8px; border: 1px solid rgba(255,68,51,0.3); min-height: 40px; }
-            .ckw-btn-sm { font-size: 12px; padding: 4px 10px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; color: white; }
+            #ckw-delete-actions { display: none; justify-content: space-between; align-items: center; margin-bottom: 12px; background: rgba(255,68,51,0.08); padding: 0 12px; border-radius: 8px; border: 1px solid rgba(255,68,51,0.3); min-height: 36px; box-sizing: border-box;}
+            .ckw-btn-sm { font-size: 12px; padding: 0 10px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; color: white; height: 24px; display: inline-flex; align-items: center; justify-content: center;}
             
             .ckw-btn-primary { background: ${ACCENT_COLOR}; color: #fff; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
             .ckw-btn-primary:hover { filter: brightness(0.9); }
             .ckw-btn-secondary { background: #eee; color: #333; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
             .ckw-btn-secondary:hover { background: #ddd; }
 
-            /* Dark Mode */
             body[data-theme="dark"] .crack-kw-modal { background: #242321 !important; color: #F0EFEB !important; }
             body[data-theme="dark"] .ckw-header h3 { color: #F0EFEB !important; }
             body[data-theme="dark"] .ckw-icon-btn { color: #aaa; }
@@ -228,17 +228,17 @@
                         <button class="ckw-tab active" data-tab="always">상시 노트</button>
                         <button class="ckw-tab" data-tab="keyword">키워드 노트</button>
                     </div>
-                    <button id="ckw-toggle-del" title="다중 삭제 모드">🗑️</button>
+                    <button id="ckw-toggle-del" title="다중 삭제 모드">☜</button>
                 </div>
                 
                 <div id="ckw-delete-actions">
                     <div style="display:flex; align-items:center;">
-                        <button id="ckw-del-select-all" style="background:none;border:none;cursor:pointer;font-size:16px;color:${DELETE_COLOR};">□</button>
-                        <span id="ckw-del-count" style="color:${DELETE_COLOR};font-weight:bold;font-size:13px;margin-left:6px;">0개 선택됨</span>
+                        <button id="ckw-del-select-all" style="background:none;border:none;cursor:pointer;font-size:16px;color:${DELETE_COLOR};padding:0;margin-right:6px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;">□</button>
+                        <span id="ckw-del-count" style="color:${DELETE_COLOR};font-weight:bold;font-size:13px;margin-top:1px;">0개 선택됨</span>
                     </div>
                     <div style="display:flex; gap:8px;">
-                        <button id="ckw-del-confirm" class="ckw-btn-sm" style="background:${DELETE_COLOR};">삭제</button>
-                        <button id="ckw-del-cancel" class="ckw-btn-sm" style="background:#888;">취소</button>
+                        <button id="ckw-del-confirm" class="ckw-btn-sm" style="background:${DELETE_COLOR};">✔ 삭제</button>
+                        <button id="ckw-del-cancel" class="ckw-btn-sm" style="background:#888;">✘ 취소</button>
                     </div>
                 </div>
 
@@ -266,13 +266,12 @@
                 selectedForDelete.clear();
                 
                 tabsWrapper.style.display = 'flex';
-                toggleDelBtn.style.display = (currentTab === 'keyword') ? 'block' : 'none';
+                toggleDelBtn.style.display = (currentTab === 'keyword') ? 'flex' : 'none';
                 
                 renderContent();
             };
         });
 
-        // 삭제 토글 액션
         toggleDelBtn.onclick = () => {
             isDeleteMode = !isDeleteMode;
             selectedForDelete.clear();
@@ -280,7 +279,6 @@
             renderContent();
         };
 
-        // 다중 삭제 취소
         document.getElementById('ckw-del-cancel').onclick = () => {
             isDeleteMode = false;
             selectedForDelete.clear();
@@ -288,7 +286,6 @@
             renderContent();
         };
 
-        // 다중 삭제 확인
         document.getElementById('ckw-del-confirm').onclick = () => {
             if (selectedForDelete.size === 0) return alert("삭제할 항목을 선택해주세요.");
             if (!confirm(`선택한 ${selectedForDelete.size}개의 키워드 노트를 삭제하시겠습니까?`)) return;
@@ -303,7 +300,6 @@
             renderContent();
         };
 
-        // 다중 삭제 전체 선택
         document.getElementById('ckw-del-select-all').onclick = () => {
             const data = getNoteData(chatId);
             if (data.keywords.length === 0) return;
@@ -321,7 +317,6 @@
         function renderContent() {
             const data = getNoteData(chatId);
 
-            // 삭제 액션바 표시 관리
             delActions.style.display = isDeleteMode ? 'flex' : 'none';
             if (isDeleteMode) {
                 document.getElementById('ckw-del-count').textContent = `${selectedForDelete.size}개 선택됨`;
@@ -332,7 +327,7 @@
                 contentArea.innerHTML = `
                     <div style="flex:1; display:flex; flex-direction:column;">
                         <span class="ckw-label">평소에 상시로 유지될 노트를 입력하세요. (키워드 발동 시 교체됨)</span>
-                        <textarea id="ckw-ta-always" class="ckw-textarea" placeholder="상시 노트 내용...">${data.alwaysNote || ''}</textarea>
+                        <textarea id="ckw-ta-always" class="ckw-textarea" placeholder="상시 노트 내용...">${escapeHtml(data.alwaysNote || '')}</textarea>
                         <div id="ckw-count-always" class="ckw-char-count">0 / 500자</div>
                     </div>
                 `;
@@ -358,7 +353,7 @@
                     renderEditor(data);
                 } else {
                     tabsWrapper.style.display = 'flex';
-                    toggleDelBtn.style.display = 'block';
+                    toggleDelBtn.style.display = 'flex';
                     renderKeywordList(data);
                 }
             }
@@ -380,23 +375,22 @@
                     const expireTurn = holdsInfo[kw.id];
                     let holdStatus = '';
                     if (expireTurn && expireTurn >= currentTurn) {
-                        holdStatus = `<span style="color:${ACCENT_COLOR}; font-weight:bold; font-size:12px; margin-left:6px;">[발동중]</span>`;
+                        holdStatus = `<span style="color:${ACCENT_COLOR}; font-weight:bold; font-size:12px; margin-left:6px; flex-shrink:0;">[발동중]</span>`;
                     }
 
-                    // 트리거 텍스트 요약
                     let trigText = kw.triggers.join(', ');
                     
                     html += `
                         <div class="ckw-list-item ${selClass}" data-id="${kw.id}" data-idx="${idx}">
-                            <div class="ckw-item-left">
+                            <div class="ckw-item-left" title="${escapeHtml(kw.name)}">
                                 ${isDeleteMode ? `<input type="checkbox" ${isChecked} style="pointer-events:none; margin-right:8px;">` : ''}
-                                <span>${kw.name} <span style="color:#777; font-weight:normal; font-size:13px;">(${trigText})</span></span>
+                                <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(kw.name)} <span style="color:#777; font-weight:normal; font-size:13px;">(${escapeHtml(trigText)})</span></span>
                                 ${holdStatus}
                             </div>
                             ${!isDeleteMode ? `
                             <div class="ckw-item-right">
-                                <button class="ckw-order-btn btn-up" data-idx="${idx}" title="위로">▲</button>
-                                <button class="ckw-order-btn btn-down" data-idx="${idx}" title="아래로">▼</button>
+                                <button class="ckw-order-btn btn-up" data-idx="${idx}" title="위로 올리기 (우선순위 상승)">▲</button>
+                                <button class="ckw-order-btn btn-down" data-idx="${idx}" title="아래로 내리기 (우선순위 하락)">▼</button>
                             </div>
                             ` : ''}
                         </div>
@@ -405,10 +399,10 @@
             }
             html += `</div>`;
             
-            // 새 키워드 추가 버튼을 가장 아래에 중앙 정렬
             if (!isDeleteMode) {
                 html += `
-                    <div style="text-align:center; margin-top:16px; margin-bottom:12px;">
+                    <div style="text-align:center; margin-top:10px; margin-bottom:12px;">
+                        <div style="font-size:11px; color:#888; margin-bottom:8px;">※ 목록의 최상단이 1순위(최우선)로 발동됩니다.</div>
                         <button id="ckw-btn-add" class="ckw-btn-primary">+ 새 키워드 추가</button>
                     </div>
                 `;
@@ -416,13 +410,12 @@
 
             contentArea.innerHTML = html;
 
-            // 이벤트 할당
             const btnAdd = document.getElementById('ckw-btn-add');
             if (btnAdd) btnAdd.onclick = () => { editModeId = 'new'; renderContent(); };
 
             document.querySelectorAll('.ckw-list-item').forEach(item => {
                 item.onclick = (e) => {
-                    if (e.target.closest('.ckw-item-right')) return; // 화살표 클릭 시 무시
+                    if (e.target.closest('.ckw-item-right')) return;
                     const id = item.dataset.id;
                     
                     if (isDeleteMode) {
@@ -430,7 +423,6 @@
                         else selectedForDelete.add(id);
                         renderContent();
                     } else {
-                        // 수정 모드 진입
                         editModeId = id;
                         renderContent();
                     }
@@ -476,16 +468,16 @@
             contentArea.innerHTML = `
                 <div style="flex:1; display:flex; flex-direction:column; overflow-y:auto; padding-right:4px;">
                     <span class="ckw-label">노트 이름</span>
-                    <input type="text" id="ckw-ed-name" class="ckw-input" placeholder="예: 세계수 설정" value="${kw.name}">
+                    <input type="text" id="ckw-ed-name" class="ckw-input" placeholder="예: 세계수 설정" value="${escapeHtml(kw.name)}">
                     
                     <span class="ckw-label">발동 키워드 (쉼표로 구분 OR, &&로 묶으면 AND)</span>
-                    <input type="text" id="ckw-ed-trig" class="ckw-input" placeholder="예: 엘프, 나무 && 마법" value="${kw.triggers.join(', ')}">
+                    <input type="text" id="ckw-ed-trig" class="ckw-input" placeholder="예: 엘프, 나무 && 마법" value="${escapeHtml(kw.triggers.join(', '))}">
                     
                     <span class="ckw-label">유지 턴 수 (발동 후 몇 번의 턴 동안 교체 유지할지)</span>
                     <input type="number" id="ckw-ed-turn" class="ckw-input" min="0" value="${kw.holdTurns}">
                     
                     <span class="ckw-label">노트 내용 (발동 시 상시노트를 대체할 내용)</span>
-                    <textarea id="ckw-ed-content" class="ckw-textarea" placeholder="발동 시 주입될 내용...">${kw.content}</textarea>
+                    <textarea id="ckw-ed-content" class="ckw-textarea" placeholder="발동 시 주입될 내용...">${escapeHtml(kw.content)}</textarea>
                     <div id="ckw-ed-count" class="ckw-char-count">0 / 500자</div>
                     
                     <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
@@ -525,7 +517,7 @@
                 kw.triggers = trigVal.split(',').map(s => s.trim()).filter(Boolean);
 
                 if (editModeId === 'new') {
-                    // 새로 추가 시 최하단(우선순위 가장 낮음)으로 추가
+                    // 신규 항목은 맨 아래(최하순위)에 추가됨. 원하면 화살표로 올려야함.
                     data.keywords.push(kw);
                 } else {
                     const idx = data.keywords.findIndex(k => k.id === editModeId);
@@ -585,9 +577,10 @@
         const data = getNoteData(chatId);
         let holds = getHolds(chatId);
         
-        // 1. 턴 증가 및 만료된 홀드 정리
         const currentTurn = incTurnCount(chatId);
         let holdsChanged = false;
+        
+        // 1. 만료된 홀드 턴 정리
         for (const kwId in holds) {
             if (holds[kwId] < currentTurn) {
                 delete holds[kwId];
@@ -595,7 +588,7 @@
             }
         }
 
-        // 2. 키워드 감지 (입력되면 유지턴 연장)
+        // 2. 입력된 메시지에서 발동 키워드 찾고 유지턴 갱신
         if (data.keywords && data.keywords.length > 0) {
             for (const kw of data.keywords) {
                 if (matchTriggers(userMessage, kw.triggers)) {
@@ -607,17 +600,13 @@
         
         if (holdsChanged) saveHolds(chatId, holds);
 
-        // 3. 발동 중인 키워드 확인 및 우선순위(인덱스) 적용
+        // 3. 발동 중인 키워드 중 최우선순위(위에서부터 1등) 찾기
         let finalNoteText = "";
-        
-        // 배열 순서대로 검사하며, 발동 중인 첫 번째 요소(우선순위 1등)를 찾는다
         const activeKeyword = data.keywords.find(kw => holds[kw.id] && holds[kw.id] >= currentTurn);
 
         if (activeKeyword) {
-            // 발동된 최우선 키워드 노트 1개의 내용으로 교체
             finalNoteText = activeKeyword.content;
         } else {
-            // 발동된 것이 없으면 상시 노트
             finalNoteText = data.alwaysNote || "";
         }
 
