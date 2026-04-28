@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         크랙 단독형 키워드 노트 (Keyword Note)
+// @name         크랙 단독형 키워드 노트 (Keyword Note) v2
 // @namespace    https://crack.wrtn.ai/
-// @version      1.0.0
-// @description  상시 발동 및 키워드 감지 시 완전 교체되는 직관적인 키워드 노트 스크립트
+// @version      2.0.0
+// @description  우선순위 적용, 다중 삭제, 자동 교체 로직이 완벽히 들어간 키워드 노트
 // @author       Assistant
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -13,6 +13,7 @@
     'use strict';
 
     const ACCENT_COLOR = '#FBA707';
+    const DELETE_COLOR = '#FF4433';
     let isModalOpen = false;
     let _capturedToken = '';
 
@@ -31,7 +32,6 @@
         return _capturedToken;
     }
 
-    // fetch 가로채기 (API 토큰 획득용)
     const _origFetch = window.fetch;
     window.fetch = async function(...a) {
         try {
@@ -47,7 +47,6 @@
         return _origFetch.apply(this, a);
     };
 
-    // 로컬 스토리지 데이터 관리
     function getNoteData(chatId) {
         try {
             const data = localStorage.getItem(`Crack_KW_Note_${chatId}`);
@@ -81,6 +80,34 @@
     }
 
     // ==========================================
+    // 유저노트 UI 반영 로직 (핵심)
+    // ==========================================
+    function getPlatformTextarea() {
+        const tas = document.querySelectorAll('textarea');
+        for (const ta of tas) {
+            if (!ta.offsetParent) continue;
+            // wrtn의 우측 패널 유저노트는 보통 maxLength가 500 또는 2000으로 세팅됨.
+            if (ta.maxLength === 500 || ta.maxLength === 2000) return ta;
+        }
+        return null;
+    }
+
+    function writeTextarea(text) {
+        const ta = getPlatformTextarea();
+        if (!ta) return;
+        if (ta.value === text) return;
+        
+        ta.value = text;
+        // React 렌더링 강제 업데이트
+        for (const key of Object.keys(ta)) {
+            if (key.startsWith('__reactProps')) {
+                try { ta[key].onChange({ target: { value: text } }); } catch(e){}
+                break;
+            }
+        }
+    }
+
+    // ==========================================
     // UI 및 모달 스타일 
     // ==========================================
     function injectStyles() {
@@ -95,9 +122,15 @@
             .ckw-header h3 { margin: 0; font-size: 17px; font-weight: 700; color: #222 !important; display: flex; align-items: center; gap: 6px; }
             .ckw-icon-btn { background: none; border: none; font-size: 14px; cursor: pointer; padding: 4px 8px; border-radius: 6px; color: #666; transition: 0.2s; font-weight: bold; }
             .ckw-icon-btn:hover { background: #eee; color: #222; }
-            .ckw-tabs { display: flex; gap: 12px; border-bottom: 1px solid #eee; padding-bottom: 0px; margin-bottom: 16px; }
+            
+            .ckw-tabs-container { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; margin-bottom: 16px; }
+            .ckw-tabs { display: flex; gap: 12px; }
             .ckw-tab { background: none; border: none; font-size: 14px; font-weight: 600; color: #888; padding: 0 4px 12px 4px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
             .ckw-tab.active { color: ${ACCENT_COLOR}; border-bottom-color: ${ACCENT_COLOR}; }
+            
+            #ckw-toggle-del { display: none; font-size: 16px; background: none; border: 1px solid #ddd; border-radius: 6px; padding: 4px 12px; margin-bottom: 8px; cursor: pointer; }
+            #ckw-toggle-del.active { background: ${DELETE_COLOR}; color: white; border-color: ${DELETE_COLOR}; }
+
             .ckw-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
             
             /* Inputs & Textareas */
@@ -111,36 +144,38 @@
             .ckw-char-count.over { color: #e74c3c; }
 
             /* Lists & Items */
-            .ckw-list-item { background: #f9f9f9; border: 1px solid #eee; border-radius: 8px; padding: 12px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px; transition: 0.2s; }
+            .ckw-list-item { background: #f9f9f9; border: 1px solid #eee; border-radius: 8px; padding: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; transition: 0.2s; cursor: pointer; }
             .ckw-list-item:hover { border-color: ${ACCENT_COLOR}; }
-            .ckw-list-top { display: flex; justify-content: space-between; align-items: center; }
-            .ckw-list-title { font-weight: 700; font-size: 14px; color: #333; }
-            .ckw-list-meta { font-size: 11px; color: #777; display: flex; gap: 8px; }
-            .ckw-list-btns button { background: none; border: none; cursor: pointer; font-size: 12px; color: #666; padding: 4px; border-radius: 4px; }
-            .ckw-list-btns button:hover { background: #eee; color: #222; }
-            .ckw-list-btns .ckw-del-btn:hover { background: #ffebeb; color: #e74c3c; }
+            .ckw-list-item.selected-delete { border-color: ${DELETE_COLOR}; background: rgba(255,68,51,0.05); }
             
-            .ckw-btn-primary { background: ${ACCENT_COLOR}; color: #fff; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
+            .ckw-item-left { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; color: #333; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+            .ckw-item-right { display: flex; gap: 4px; }
+            .ckw-order-btn { background: #eee; border: none; cursor: pointer; font-size: 10px; color: #666; padding: 6px; border-radius: 4px; }
+            .ckw-order-btn:hover { background: #ddd; color: #222; }
+
+            /* Delete Action Bar */
+            #ckw-delete-actions { display: none; justify-content: space-between; align-items: center; margin-bottom: 12px; background: rgba(255,68,51,0.08); padding: 0 12px; border-radius: 8px; border: 1px solid rgba(255,68,51,0.3); min-height: 40px; }
+            .ckw-btn-sm { font-size: 12px; padding: 4px 10px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; color: white; }
+            
+            .ckw-btn-primary { background: ${ACCENT_COLOR}; color: #fff; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
             .ckw-btn-primary:hover { filter: brightness(0.9); }
-            .ckw-btn-secondary { background: #eee; color: #333; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
+            .ckw-btn-secondary { background: #eee; color: #333; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 13px; }
             .ckw-btn-secondary:hover { background: #ddd; }
-            
-            .ckw-row { display: flex; gap: 12px; }
-            .ckw-col { flex: 1; }
 
             /* Dark Mode */
             body[data-theme="dark"] .crack-kw-modal { background: #242321 !important; color: #F0EFEB !important; }
             body[data-theme="dark"] .ckw-header h3 { color: #F0EFEB !important; }
             body[data-theme="dark"] .ckw-icon-btn { color: #aaa; }
             body[data-theme="dark"] .ckw-icon-btn:hover { background: #333; color: #fff; }
-            body[data-theme="dark"] .ckw-tabs { border-bottom-color: #444; }
+            body[data-theme="dark"] .ckw-tabs-container { border-bottom-color: #444; }
+            body[data-theme="dark"] #ckw-toggle-del { border-color: #444; color: #aaa;}
             body[data-theme="dark"] .ckw-textarea, body[data-theme="dark"] .ckw-input { background: #141413; border-color: #42413D; color: #F0EFEB; }
             body[data-theme="dark"] .ckw-textarea:focus, body[data-theme="dark"] .ckw-input:focus { background: #1a1918; }
             body[data-theme="dark"] .ckw-label { color: #aaa; }
             body[data-theme="dark"] .ckw-list-item { background: #1a1918; border-color: #42413D; }
-            body[data-theme="dark"] .ckw-list-title { color: #F0EFEB; }
-            body[data-theme="dark"] .ckw-list-btns button:hover { background: #333; color: #fff; }
-            body[data-theme="dark"] .ckw-list-btns .ckw-del-btn:hover { background: #4a1919; color: #ff6b6b; }
+            body[data-theme="dark"] .ckw-item-left { color: #F0EFEB; }
+            body[data-theme="dark"] .ckw-order-btn { background: #333; color: #aaa; }
+            body[data-theme="dark"] .ckw-order-btn:hover { background: #444; color: #fff; }
             body[data-theme="dark"] .ckw-btn-secondary { background: #333; color: #eee; }
             body[data-theme="dark"] .ckw-btn-secondary:hover { background: #444; }
         `;
@@ -163,7 +198,6 @@
             openModal(); 
         };
         
-        // 기존 북마크 버튼이나 AI 요약 버튼 앞에 추가
         headerContainer.prepend(btn);
     }
 
@@ -173,8 +207,11 @@
         if (!chatId) return alert("대화방 정보를 읽을 수 없습니다.");
 
         isModalOpen = true;
-        let currentTab = 'always'; // always or keyword
-        let editModeId = null; // null 이면 목록 보기, id가 있으면 수정 모드, 'new'면 추가 모드
+        let currentTab = 'always';
+        let editModeId = null;
+        
+        let isDeleteMode = false;
+        let selectedForDelete = new Set();
 
         const overlay = document.createElement('div');
         overlay.id = 'ckw-overlay';
@@ -186,17 +223,34 @@
                     <h3>🌼 키워드 노트</h3>
                     <button class="ckw-icon-btn" id="ckw-close">✕</button>
                 </div>
-                <div class="ckw-tabs" id="ckw-tabs-container">
-                    <button class="ckw-tab active" data-tab="always">상시 노트</button>
-                    <button class="ckw-tab" data-tab="keyword">키워드 노트</button>
+                <div class="ckw-tabs-container" id="ckw-tabs-wrapper">
+                    <div class="ckw-tabs">
+                        <button class="ckw-tab active" data-tab="always">상시 노트</button>
+                        <button class="ckw-tab" data-tab="keyword">키워드 노트</button>
+                    </div>
+                    <button id="ckw-toggle-del" title="다중 삭제 모드">🗑️</button>
                 </div>
+                
+                <div id="ckw-delete-actions">
+                    <div style="display:flex; align-items:center;">
+                        <button id="ckw-del-select-all" style="background:none;border:none;cursor:pointer;font-size:16px;color:${DELETE_COLOR};">□</button>
+                        <span id="ckw-del-count" style="color:${DELETE_COLOR};font-weight:bold;font-size:13px;margin-left:6px;">0개 선택됨</span>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                        <button id="ckw-del-confirm" class="ckw-btn-sm" style="background:${DELETE_COLOR};">삭제</button>
+                        <button id="ckw-del-cancel" class="ckw-btn-sm" style="background:#888;">취소</button>
+                    </div>
+                </div>
+
                 <div class="ckw-content" id="ckw-content-area"></div>
             </div>
         `;
         document.body.appendChild(overlay);
 
         const contentArea = document.getElementById('ckw-content-area');
-        const tabsContainer = document.getElementById('ckw-tabs-container');
+        const tabsWrapper = document.getElementById('ckw-tabs-wrapper');
+        const toggleDelBtn = document.getElementById('ckw-toggle-del');
+        const delActions = document.getElementById('ckw-delete-actions');
 
         document.getElementById('ckw-close').onclick = closeModal;
         overlay.onclick = (e) => { if(e.target === overlay) closeModal(); };
@@ -207,17 +261,72 @@
                 tabs.forEach(t => t.classList.remove('active'));
                 tab.classList.add('active');
                 currentTab = tab.dataset.tab;
-                editModeId = null; // 탭 변경시 항상 메인 뷰로 초기화
-                tabsContainer.style.display = 'flex';
+                editModeId = null; 
+                isDeleteMode = false;
+                selectedForDelete.clear();
+                
+                tabsWrapper.style.display = 'flex';
+                toggleDelBtn.style.display = (currentTab === 'keyword') ? 'block' : 'none';
+                
                 renderContent();
             };
         });
 
-        // 문자열 길이 계산 (띄어쓰기 포함)
+        // 삭제 토글 액션
+        toggleDelBtn.onclick = () => {
+            isDeleteMode = !isDeleteMode;
+            selectedForDelete.clear();
+            toggleDelBtn.classList.toggle('active', isDeleteMode);
+            renderContent();
+        };
+
+        // 다중 삭제 취소
+        document.getElementById('ckw-del-cancel').onclick = () => {
+            isDeleteMode = false;
+            selectedForDelete.clear();
+            toggleDelBtn.classList.remove('active');
+            renderContent();
+        };
+
+        // 다중 삭제 확인
+        document.getElementById('ckw-del-confirm').onclick = () => {
+            if (selectedForDelete.size === 0) return alert("삭제할 항목을 선택해주세요.");
+            if (!confirm(`선택한 ${selectedForDelete.size}개의 키워드 노트를 삭제하시겠습니까?`)) return;
+            
+            const data = getNoteData(chatId);
+            data.keywords = data.keywords.filter(k => !selectedForDelete.has(k.id));
+            saveNoteData(chatId, data);
+            
+            isDeleteMode = false;
+            selectedForDelete.clear();
+            toggleDelBtn.classList.remove('active');
+            renderContent();
+        };
+
+        // 다중 삭제 전체 선택
+        document.getElementById('ckw-del-select-all').onclick = () => {
+            const data = getNoteData(chatId);
+            if (data.keywords.length === 0) return;
+            
+            if (selectedForDelete.size === data.keywords.length) {
+                selectedForDelete.clear();
+            } else {
+                data.keywords.forEach(k => selectedForDelete.add(k.id));
+            }
+            renderContent();
+        };
+
         const charLen = (str) => Array.from(str || '').length;
 
         function renderContent() {
             const data = getNoteData(chatId);
+
+            // 삭제 액션바 표시 관리
+            delActions.style.display = isDeleteMode ? 'flex' : 'none';
+            if (isDeleteMode) {
+                document.getElementById('ckw-del-count').textContent = `${selectedForDelete.size}개 선택됨`;
+                document.getElementById('ckw-del-select-all').textContent = (selectedForDelete.size === data.keywords.length && data.keywords.length > 0) ? '■' : '□';
+            }
 
             if (currentTab === 'always') {
                 contentArea.innerHTML = `
@@ -245,65 +354,114 @@
             } 
             else if (currentTab === 'keyword') {
                 if (editModeId) {
-                    tabsContainer.style.display = 'none'; // 에디터 진입 시 탭 숨김
+                    tabsWrapper.style.display = 'none'; 
                     renderEditor(data);
                 } else {
-                    tabsContainer.style.display = 'flex';
+                    tabsWrapper.style.display = 'flex';
+                    toggleDelBtn.style.display = 'block';
                     renderKeywordList(data);
                 }
             }
         }
 
         function renderKeywordList(data) {
-            let html = `<div style="margin-bottom: 12px; text-align: right;"><button id="ckw-btn-add" class="ckw-btn-primary">+ 새 키워드 추가</button></div>`;
+            let html = `<div>`;
             
             if (!data.keywords || data.keywords.length === 0) {
-                html += `<div style="text-align:center; color:#999; margin-top:40px; font-size:13px;">등록된 키워드 노트가 없습니다.</div>`;
+                html += `<div style="text-align:center; color:#999; margin-top:40px; font-size:13px; padding-bottom: 20px;">등록된 키워드 노트가 없습니다.</div>`;
             } else {
-                html += `<div>`;
-                data.keywords.forEach(kw => {
+                data.keywords.forEach((kw, idx) => {
+                    const isSel = isDeleteMode && selectedForDelete.has(kw.id);
+                    const selClass = isSel ? 'selected-delete' : '';
+                    const isChecked = isSel ? 'checked' : '';
+                    
                     const holdsInfo = getHolds(chatId);
                     const currentTurn = getTurnCount(chatId);
                     const expireTurn = holdsInfo[kw.id];
                     let holdStatus = '';
-                    if (expireTurn && expireTurn > currentTurn) {
-                        holdStatus = `<span style="color:${ACCENT_COLOR}; font-weight:bold;">(발동 중: ${expireTurn - currentTurn}턴 남음)</span>`;
+                    if (expireTurn && expireTurn >= currentTurn) {
+                        holdStatus = `<span style="color:${ACCENT_COLOR}; font-weight:bold; font-size:12px; margin-left:6px;">[발동중]</span>`;
                     }
 
+                    // 트리거 텍스트 요약
+                    let trigText = kw.triggers.join(', ');
+                    
                     html += `
-                        <div class="ckw-list-item">
-                            <div class="ckw-list-top">
-                                <span class="ckw-list-title">${kw.name} ${holdStatus}</span>
-                                <div class="ckw-list-btns">
-                                    <button class="ckw-edit-btn" data-id="${kw.id}">수정</button>
-                                    <button class="ckw-del-btn" data-id="${kw.id}">삭제</button>
-                                </div>
+                        <div class="ckw-list-item ${selClass}" data-id="${kw.id}" data-idx="${idx}">
+                            <div class="ckw-item-left">
+                                ${isDeleteMode ? `<input type="checkbox" ${isChecked} style="pointer-events:none; margin-right:8px;">` : ''}
+                                <span>${kw.name} <span style="color:#777; font-weight:normal; font-size:13px;">(${trigText})</span></span>
+                                ${holdStatus}
                             </div>
-                            <div class="ckw-list-meta">
-                                <span>키워드: ${kw.triggers.join(', ')}</span>
-                                <span>| 유지: ${kw.holdTurns}턴</span>
-                                <span>| 길이: ${charLen(kw.content)}자</span>
+                            ${!isDeleteMode ? `
+                            <div class="ckw-item-right">
+                                <button class="ckw-order-btn btn-up" data-idx="${idx}" title="위로">▲</button>
+                                <button class="ckw-order-btn btn-down" data-idx="${idx}" title="아래로">▼</button>
                             </div>
+                            ` : ''}
                         </div>
                     `;
                 });
-                html += `</div>`;
             }
+            html += `</div>`;
+            
+            // 새 키워드 추가 버튼을 가장 아래에 중앙 정렬
+            if (!isDeleteMode) {
+                html += `
+                    <div style="text-align:center; margin-top:16px; margin-bottom:12px;">
+                        <button id="ckw-btn-add" class="ckw-btn-primary">+ 새 키워드 추가</button>
+                    </div>
+                `;
+            }
+
             contentArea.innerHTML = html;
 
+            // 이벤트 할당
             const btnAdd = document.getElementById('ckw-btn-add');
             if (btnAdd) btnAdd.onclick = () => { editModeId = 'new'; renderContent(); };
 
-            document.querySelectorAll('.ckw-edit-btn').forEach(btn => {
-                btn.onclick = () => { editModeId = btn.dataset.id; renderContent(); };
+            document.querySelectorAll('.ckw-list-item').forEach(item => {
+                item.onclick = (e) => {
+                    if (e.target.closest('.ckw-item-right')) return; // 화살표 클릭 시 무시
+                    const id = item.dataset.id;
+                    
+                    if (isDeleteMode) {
+                        if (selectedForDelete.has(id)) selectedForDelete.delete(id);
+                        else selectedForDelete.add(id);
+                        renderContent();
+                    } else {
+                        // 수정 모드 진입
+                        editModeId = id;
+                        renderContent();
+                    }
+                };
             });
 
-            document.querySelectorAll('.ckw-del-btn').forEach(btn => {
-                btn.onclick = () => {
-                    if (!confirm("이 키워드 노트를 삭제하시겠습니까?")) return;
-                    data.keywords = data.keywords.filter(k => k.id !== btn.dataset.id);
-                    saveNoteData(chatId, data);
-                    renderContent();
+            document.querySelectorAll('.btn-up').forEach(btn => {
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    const idx = parseInt(btn.dataset.idx);
+                    if (idx > 0) {
+                        const temp = data.keywords[idx - 1];
+                        data.keywords[idx - 1] = data.keywords[idx];
+                        data.keywords[idx] = temp;
+                        saveNoteData(chatId, data);
+                        renderContent();
+                    }
+                };
+            });
+
+            document.querySelectorAll('.btn-down').forEach(btn => {
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    const idx = parseInt(btn.dataset.idx);
+                    if (idx < data.keywords.length - 1) {
+                        const temp = data.keywords[idx + 1];
+                        data.keywords[idx + 1] = data.keywords[idx];
+                        data.keywords[idx] = temp;
+                        saveNoteData(chatId, data);
+                        renderContent();
+                    }
                 };
             });
         }
@@ -312,7 +470,7 @@
             let kw = { id: 'kw_' + Date.now(), name: '', triggers: [], holdTurns: 1, content: '' };
             if (editModeId !== 'new') {
                 const found = data.keywords.find(k => k.id === editModeId);
-                if (found) kw = { ...found }; // 복사본 생성
+                if (found) kw = { ...found }; 
             }
 
             contentArea.innerHTML = `
@@ -364,10 +522,10 @@
                 kw.name = nameVal;
                 kw.holdTurns = turnVal;
                 kw.content = contVal;
-                // 트리거 파싱 (빈칸 제외)
                 kw.triggers = trigVal.split(',').map(s => s.trim()).filter(Boolean);
 
                 if (editModeId === 'new') {
+                    // 새로 추가 시 최하단(우선순위 가장 낮음)으로 추가
                     data.keywords.push(kw);
                 } else {
                     const idx = data.keywords.findIndex(k => k.id === editModeId);
@@ -390,30 +548,25 @@
     }
 
     // ==========================================
-    // 핵심 로직: 텍스트 파싱 및 유저노트 교체
+    // 핵심 로직: 텍스트 파싱 및 유저노트 교체 (단일 채택)
     // ==========================================
     
-    // 유니코드 정규화 및 소문자 변환
     function norm(s) { return (s || '').normalize('NFC').toLowerCase(); }
     
-    // 트리거 감지 로직
     function matchTriggers(text, triggers) {
         if (!triggers || !triggers.length) return false;
         const lowText = norm(text);
         for (const t of triggers) {
-            // && 로 묶인 조건은 모두 포함되어야 함 (AND)
             const parts = t.split('&&').map(p => norm(p.trim())).filter(Boolean);
             if (parts.length && parts.every(p => lowText.includes(p))) return true;
         }
         return false;
     }
 
-    // 서버로 유저노트 패치
     async function patchUserNoteAPI(chatId, content) {
         const token = getToken();
         if (!token || !chatId) return false;
         try {
-            // 글자수가 500자가 넘어가면 isExtend를 true로 세팅
             const isExtend = Array.from(content).length > 500; 
             const url = `https://crack-api.wrtn.ai/crack-gen/v3/chats/${chatId}`;
             const res = await _origFetch(url, {
@@ -424,12 +577,10 @@
             });
             return res.ok;
         } catch(e) {
-            console.error("UserNote Patch Error:", e);
             return false;
         }
     }
 
-    // 메시지 전송 시 끼어들어서 처리하는 메인 함수
     async function processNoteSwap(chatId, userMessage) {
         const data = getNoteData(chatId);
         let holds = getHolds(chatId);
@@ -444,11 +595,10 @@
             }
         }
 
-        // 2. 사용자의 현재 메시지를 분석하여 새로운 트리거 발동 체크
+        // 2. 키워드 감지 (입력되면 유지턴 연장)
         if (data.keywords && data.keywords.length > 0) {
             for (const kw of data.keywords) {
                 if (matchTriggers(userMessage, kw.triggers)) {
-                    // 트리거 발동: 현재 턴 + 유지 턴 수만큼 홀드
                     holds[kw.id] = currentTurn + kw.holdTurns;
                     holdsChanged = true;
                 }
@@ -457,37 +607,25 @@
         
         if (holdsChanged) saveHolds(chatId, holds);
 
-        // 3. 현재 발동 중인 키워드 노트를 수집 (교체 로직)
+        // 3. 발동 중인 키워드 확인 및 우선순위(인덱스) 적용
         let finalNoteText = "";
-        const activeKeywords = data.keywords.filter(kw => holds[kw.id] && holds[kw.id] >= currentTurn);
+        
+        // 배열 순서대로 검사하며, 발동 중인 첫 번째 요소(우선순위 1등)를 찾는다
+        const activeKeyword = data.keywords.find(kw => holds[kw.id] && holds[kw.id] >= currentTurn);
 
-        if (activeKeywords.length > 0) {
-            // 발동된 키워드 노트가 있다면, 상시 노트를 '무시'하고 키워드 노트 내용들만 합침
-            finalNoteText = activeKeywords.map(kw => kw.content).join('\n\n');
+        if (activeKeyword) {
+            // 발동된 최우선 키워드 노트 1개의 내용으로 교체
+            finalNoteText = activeKeyword.content;
         } else {
-            // 발동된 키워드가 없으면 평소처럼 상시 노트를 사용
+            // 발동된 것이 없으면 상시 노트
             finalNoteText = data.alwaysNote || "";
         }
 
-        // 4. 서버에 패치 전송
-        await patchUserNoteAPI(chatId, finalNoteText);
-
-        // UI에 표시되는 텍스트에어리어 동기화 시도 (선택 사항)
-        try {
-            const tas = document.querySelectorAll('textarea');
-            for (const ta of tas) {
-                if (ta.placeholder && ta.placeholder.includes("유저노트")) {
-                    ta.value = finalNoteText;
-                    // React 상태 업데이트 트리거
-                    for (const key of Object.keys(ta)) {
-                        if (key.startsWith('__reactProps')) {
-                            ta[key].onChange({ target: { value: finalNoteText } });
-                            break;
-                        }
-                    }
-                }
-            }
-        } catch(e) {}
+        // 4. API 전송 및 UI 강제 업데이트
+        const isSuccess = await patchUserNoteAPI(chatId, finalNoteText);
+        if (isSuccess) {
+            writeTextarea(finalNoteText);
+        }
     }
 
     // ==========================================
@@ -497,7 +635,6 @@
     window.WebSocket.prototype.send = function(wsData) {
         const ws = this;
         if (typeof wsData === 'string' && wsData.length > 10) {
-            // 토큰 캡처 (혹시 fetch에서 놓친 경우)
             if (!_capturedToken && wsData.startsWith('40')) {
                 const ji = wsData.indexOf('{');
                 if (ji > 0) {
@@ -508,7 +645,6 @@
                 }
             }
 
-            // 메시지 전송 감지
             const bi = wsData.indexOf('[');
             if (bi > 0) {
                 try {
@@ -517,12 +653,11 @@
                         const msg = arr[1].message;
                         const chatId = getChatId();
                         if (chatId) {
-                            // 비동기로 유저노트 교체를 처리한 후, 원본 메시지 전송
                             (async () => { 
                                 try { await processNoteSwap(chatId, msg); } catch(e) { console.error(e); } 
                                 _origSend.call(ws, wsData); 
                             })();
-                            return; // 여기서 return 해서 동기적 전송을 막음
+                            return; 
                         }
                     }
                 } catch(e) {}
@@ -532,11 +667,9 @@
     };
 
     // ==========================================
-    // 초기화 및 실행
+    // 초기화
     // ==========================================
     injectStyles();
-    
-    // 버튼 주입을 위한 주기적 체크
     setInterval(injectHeaderButton, 1000);
 
 })();
